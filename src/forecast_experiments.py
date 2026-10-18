@@ -12,14 +12,15 @@ STATIC = ["store_id", "cat_id", "dept_id", "state_id"]
 CODES = ["store_code", "category_code", "department_code", "state_code"]
 DYNAMIC = ["lag_1","lag_7","lag_14","lag_28","mean_7","mean_28","std_28","zero_share_28",
            "weekday","month","weekend","event_day","snap_CA","snap_TX","snap_WI"]
-FEATURES = DYNAMIC + CODES
+PRICE_FEATURES = ["sell_price","price_change_7d_pct","price_vs_28d_mean_pct","price_missing"]
 ERROR_COLUMNS = {
     "seasonal_naive_7d": "absolute_error_seasonal_naive_7d",
     "four_week_weekday_mean": "absolute_error_four_week_weekday_mean",
     "lightgbm_recursive": "absolute_error_lightgbm_recursive",
+    "lightgbm_recursive_price": "absolute_error_lightgbm_recursive_price",
 }
 
-def load_data(data_dir, max_series):
+def load_data(data_dir, max_series, prices_path=None):
     sales_file, calendar_file = data_dir/"sales_train_validation.csv", data_dir/"calendar.csv"
     if not sales_file.exists() or not calendar_file.exists():
         raise FileNotFoundError(f"Expected {sales_file} and {calendar_file}; see README for data setup.")
@@ -29,7 +30,7 @@ def load_data(data_dir, max_series):
         raise ValueError("Need at least 52 complete weeks plus three 28-day validation folds.")
     if max_series and max_series > 0 and len(sales) > max_series:
         sales = sales.sample(n=max_series, random_state=SEED).sort_index().reset_index(drop=True)
-    meta = sales[["id"]+STATIC].copy()
+    meta = sales[["id","item_id"]+STATIC].copy()
     codes = pd.DataFrame({c:pd.Categorical(meta[s]).codes.astype(np.int32) for c,s in zip(CODES,STATIC)})
     y = sales[days].to_numpy(dtype=np.float32)
     cal = pd.read_csv(calendar_file).set_index("d").reindex(days).reset_index()
@@ -42,7 +43,22 @@ def load_data(data_dir, max_series):
                    cal.get("event_name_2",pd.Series(index=cal.index,dtype=object)).notna()).astype(np.int8),
       **{c:cal.get(c,pd.Series(0,index=cal.index)).fillna(0).astype(np.int8) for c in ["snap_CA","snap_TX","snap_WI"]}
     })
-    return meta,y,codes,days,calfeat,sales_file
+    price_file = prices_path or data_dir/"sell_prices.csv"
+    price_matrix = None
+    if price_file.exists():
+        price_rows = pd.read_csv(price_file,usecols=["item_id","store_id","wm_yr_wk","sell_price"])
+        selected = meta[["item_id","store_id"]].drop_duplicates()
+        price_rows = price_rows.merge(selected,on=["item_id","store_id"],how="inner")
+        price_table = price_rows.pivot(index=["item_id","store_id"],columns="wm_yr_wk",values="sell_price")
+        keys = pd.MultiIndex.from_frame(meta[["item_id","store_id"]])
+        weekly = price_table.reindex(index=keys)
+        weekly.index = pd.RangeIndex(len(meta))
+        price_matrix = weekly.reindex(columns=cal["wm_yr_wk"].to_numpy()).to_numpy(dtype=np.float32)
+    elif prices_path is not None:
+        raise FileNotFoundError(f"Price file not found: {price_file}")
+    else:
+        price_file = None
+    return meta,y,codes,days,calfeat,sales_file,price_matrix,price_file
 
 def volatility(history):
     weeks = history[:,-364:].reshape(len(history),52,7).sum(axis=2)
@@ -56,7 +72,7 @@ def volatility(history):
     labels = np.where(rank<=1/3,"low",np.where(rank<=2/3,"moderate","high"))
     return labels,(weeks==0).mean(axis=1)
 
-def make_features(history, target_days, cal, codes):
+def make_features(history, target_days, cal, codes, prices=None):
     n = history.shape[0]
     result = {}
     for lag in (1,7,14,28): result[f"lag_{lag}"] = history[:,target_days-lag].T.reshape(-1)
@@ -67,18 +83,33 @@ def make_features(history, target_days, cal, codes):
     result["zero_share_28"] = (prev==0).mean(axis=2).T.reshape(-1)
     for c in ["weekday","month","weekend","event_day","snap_CA","snap_TX","snap_WI"]:
         result[c] = np.repeat(cal.iloc[target_days][c].to_numpy(),n)
+    features = DYNAMIC.copy()
+    if prices is not None:
+        current = prices[:,target_days]
+        previous_week = prices[:,target_days-7]
+        recent = prices[:,target_days[:,None]-np.arange(1,29)]
+        recent_count = np.isfinite(recent).sum(axis=2)
+        recent_mean = np.divide(np.nansum(recent,axis=2),recent_count,
+          out=np.full(recent_count.shape,np.nan,dtype=np.float32),where=recent_count>0)
+        result["sell_price"] = current.T.reshape(-1)
+        result["price_change_7d_pct"] = np.divide(current-previous_week,previous_week,
+          out=np.full(current.shape,np.nan,dtype=np.float32),where=previous_week>0).T.reshape(-1)
+        result["price_vs_28d_mean_pct"] = np.divide(current-recent_mean,recent_mean,
+          out=np.full(current.shape,np.nan,dtype=np.float32),where=recent_mean>0).T.reshape(-1)
+        result["price_missing"] = np.isnan(current).astype(np.int8).T.reshape(-1)
+        features += PRICE_FEATURES
     for c in CODES: result[c] = np.tile(codes[c].to_numpy(),len(target_days))
-    return pd.DataFrame(result,columns=FEATURES)
+    return pd.DataFrame(result,columns=features+CODES)
 
-def fit(history, cutoff, cal, codes):
+def fit(history, cutoff, cal, codes, prices=None):
     first = max(28,cutoff-TRAIN_DAYS+1)
     valid_start = max(first+1,cutoff-27)
     tr_days = np.arange(first,valid_start,dtype=np.int32)
     va_days = np.arange(valid_start,cutoff+1,dtype=np.int32)
-    xtr = make_features(history,tr_days,cal,codes)
+    xtr = make_features(history,tr_days,cal,codes,prices)
     ytr = history[:,tr_days].T.reshape(-1)
     train = lgb.Dataset(xtr,label=ytr,categorical_feature=CODES,free_raw_data=True)
-    xva = make_features(history,va_days,cal,codes)
+    xva = make_features(history,va_days,cal,codes,prices)
     yva = history[:,va_days].T.reshape(-1)
     valid = lgb.Dataset(xva,label=yva,categorical_feature=CODES,reference=train,free_raw_data=True)
     return lgb.train({"objective":"regression_l1","metric":"mae","learning_rate":.05,
@@ -87,13 +118,11 @@ def fit(history, cutoff, cal, codes):
       "num_threads":-1},train,num_boost_round=300,valid_sets=[valid],
       callbacks=[lgb.early_stopping(30,verbose=False)])
 
-def recursive(model, history, cutoff, cal, codes):
+def recursive(model, history, cutoff, cal, codes, prices=None):
     work = history[:,:cutoff+1].copy()
     forecasts=[]
     for day in range(cutoff+1,cutoff+HORIZON+1):
-        x=make_features(work,np.array([work.shape[1]-1]),cal.iloc[:work.shape[1]],codes)
-        for c in ["weekday","month","weekend","event_day","snap_CA","snap_TX","snap_WI"]:
-            x[c]=cal.iloc[day][c]
+        x=make_features(work,np.array([day]),cal,codes,prices)
         pred=np.maximum(model.predict(x,num_threads=-1),0).astype(np.float32)
         forecasts.append(pred); work=np.column_stack([work,pred])
     return np.stack(forecasts,axis=1)
@@ -103,34 +132,43 @@ def bootstrap_comparisons(series_metrics, replicates):
     rows = []
     for group in ("all", "low", "moderate", "high"):
         data = series_metrics if group == "all" else series_metrics[series_metrics["volatility_group"] == group]
-        columns = ["actual_demand_sum", "forecast_observations", *ERROR_COLUMNS.values()]
+        available = {name:column for name,column in ERROR_COLUMNS.items() if column in series_metrics.columns}
+        columns = ["actual_demand_sum", "forecast_observations", *available.values()]
         by_series = data.groupby("series_id", as_index=False)[columns].sum()
         if by_series.empty:
             continue
         denominator = by_series["actual_demand_sum"].to_numpy(dtype=np.float64)
         model_errors = {name:by_series[column].to_numpy(dtype=np.float64)
-                        for name,column in ERROR_COLUMNS.items()}
-        model_wape = model_errors["lightgbm_recursive"].sum()/denominator.sum()
+                        for name,column in available.items()}
         sampled = rng.integers(0, len(by_series), size=(replicates, len(by_series)))
         sample_denominator = denominator[sampled].sum(axis=1)
         valid = sample_denominator > 0
-        for baseline in ("seasonal_naive_7d", "four_week_weekday_mean"):
-            baseline_wape = model_errors[baseline].sum()/denominator.sum()
+        lightgbm_models = [name for name in model_errors if name.startswith("lightgbm_recursive")]
+        comparisons = [("baseline",baseline,candidate)
+                       for candidate in lightgbm_models
+                       for baseline in ("seasonal_naive_7d","four_week_weekday_mean")]
+        if "lightgbm_recursive" in model_errors and "lightgbm_recursive_price" in model_errors:
+            comparisons.append(("price_ablation","lightgbm_recursive","lightgbm_recursive_price"))
+        for comparison,reference,candidate in comparisons:
+            reference_wape = model_errors[reference].sum()/denominator.sum()
+            candidate_wape = model_errors[candidate].sum()/denominator.sum()
             improvement = (
-                model_errors[baseline][sampled[valid]].sum(axis=1)
-                - model_errors["lightgbm_recursive"][sampled[valid]].sum(axis=1)
+                model_errors[reference][sampled[valid]].sum(axis=1)
+                - model_errors[candidate][sampled[valid]].sum(axis=1)
             ) / sample_denominator[valid]
             rows.append({
                 "volatility_group":group,
-                "baseline_model":baseline,
+                "comparison":comparison,
+                "reference_model":reference,
+                "candidate_model":candidate,
                 "series":int(len(by_series)),
                 "bootstrap_replicates":int(len(improvement)),
-                "pooled_lightgbm_WAPE":float(model_wape),
-                "pooled_baseline_WAPE":float(baseline_wape),
-                "WAPE_improvement":float(baseline_wape-model_wape),
+                "pooled_reference_WAPE":float(reference_wape),
+                "pooled_candidate_WAPE":float(candidate_wape),
+                "WAPE_improvement":float(reference_wape-candidate_wape),
                 "improvement_95CI_low":float(np.quantile(improvement,0.025)),
                 "improvement_95CI_high":float(np.quantile(improvement,0.975)),
-                "relative_improvement_pct":float((baseline_wape-model_wape)/baseline_wape*100) if baseline_wape else float("nan"),
+                "relative_improvement_pct":float((reference_wape-candidate_wape)/reference_wape*100) if reference_wape else float("nan"),
                 "bootstrap_probability_improvement_positive":float((improvement>0).mean()),
             })
     return pd.DataFrame(rows)
@@ -139,12 +177,13 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data-dir",type=Path,default=Path("data/raw"))
     p.add_argument("--output-dir",type=Path,default=Path("artifacts"))
+    p.add_argument("--prices-path",type=Path,default=None,help="Optional M5 sell_prices.csv; defaults to data-dir/sell_prices.csv if present.")
     p.add_argument("--max-series",type=int,default=1000,help="Seeded sample size; set 0 for all series.")
     p.add_argument("--bootstrap-replicates",type=int,default=1000)
     args=p.parse_args()
     if args.max_series < 0 or args.bootstrap_replicates < 1:
         p.error("--max-series must be zero or positive and --bootstrap-replicates must be positive.")
-    meta,y,codes,days,cal,sales_file=load_data(args.data_dir,args.max_series)
+    meta,y,codes,days,cal,sales_file,price_matrix,price_file=load_data(args.data_dir,args.max_series,args.prices_path)
     starts=[y.shape[1]-HORIZON*FOLDS+i*HORIZON for i in range(FOLDS)]
     rows=[]; per_series=[]
     for fold,start in enumerate(starts,1):
@@ -155,6 +194,9 @@ def main():
         model=fit(hist,cutoff,cal,codes)
         preds={"seasonal_naive_7d":naive,"four_week_weekday_mean":weekday,
                "lightgbm_recursive":recursive(model,hist,cutoff,cal,codes)}
+        if price_matrix is not None:
+            price_model=fit(hist,cutoff,cal,codes,price_matrix)
+            preds["lightgbm_recursive_price"]=recursive(price_model,hist,cutoff,cal,codes,price_matrix)
         for name,pred in preds.items():
             per_series.append(pd.DataFrame({
                 "fold":fold,"series_id":meta["id"].to_numpy(),"volatility_group":labels,
@@ -202,6 +244,8 @@ def main():
       "max_series":args.max_series,"series_evaluated":len(meta),
       "bootstrap_replicates":args.bootstrap_replicates,
       "sales_file_sha256":hashlib.sha256(sales_file.read_bytes()).hexdigest(),
+      "price_features_used":price_matrix is not None,
+      "sell_prices_file_sha256":hashlib.sha256(price_file.read_bytes()).hexdigest() if price_file else None,
       "python":platform.python_version(),"numpy":np.__version__,"pandas":pd.__version__,
       "lightgbm":lgb.__version__,"run_timestamp_utc":datetime.now(timezone.utc).isoformat(),
       "volatility_definition":"terciles of CV among positive-demand weekly totals over the preceding 52 complete weeks; zero-week share reported separately"}
