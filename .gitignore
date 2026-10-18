@@ -224,3 +224,6 @@ data/raw/
 data/processed/
 artifacts/
 results/
+
+# Local dependency cache used for reproducible runs
+python-deps/
