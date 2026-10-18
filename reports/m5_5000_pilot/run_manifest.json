@@ -14,6 +14,6 @@
   "numpy": "2.1.3",
   "pandas": "2.2.3",
   "lightgbm": "4.5.0",
-  "run_timestamp_utc": "2026-10-18T20:56:59.682922+00:00",
+  "run_timestamp_utc": "2026-10-18T21:21:52.229970+00:00",
   "volatility_definition": "terciles of CV among positive-demand weekly totals over the preceding 52 complete weeks; zero-week share reported separately"
 }
