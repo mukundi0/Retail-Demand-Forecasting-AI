@@ -14,7 +14,7 @@ Models compared:
 - **Four-week weekday mean:** average the last four observations for each weekday and repeat the resulting pattern.
 - **LightGBM recursive:** one-step model using demand lags, rolling summaries, weekday/month, calendar event and SNAP indicators; forecast values are fed back through the 28-day horizon.
 
-Metrics are WAPE and MAE, reported overall and by volatility group. At each fold cutoff, series are assigned to relative terciles of coefficient of variation across positive-demand weekly totals in the preceding 52 complete weeks. The zero-demand-week share is reported separately. Validation-period demand is not used to calculate labels.
+Fold-level WAPE and MAE are reported overall and by volatility group. The separate pooled summary combines absolute error and actual demand across all three folds before calculating pooled WAPE; it also reports pooled MAE and the mean fold-level scores. At each fold cutoff, series are assigned to relative terciles of coefficient of variation across positive-demand weekly totals in the preceding 52 complete weeks. The zero-demand-week share is reported separately. Validation-period demand is not used to calculate labels.
 
 ## Data setup
 
@@ -44,19 +44,21 @@ python -m pip install -r requirements.txt
 python src/forecast_experiments.py
 ```
 
-For the complete item-store population:
+To scale the sample before running all series:
 
 ```bash
+python src/forecast_experiments.py --max-series 5000
 python src/forecast_experiments.py --max-series 0
 ```
 
-The 1,000-series default is an initial pipeline comparison, not a final population-level result. Record the sample size and data checksum when comparing experiments.
+The 1,000-series default is an initial pipeline comparison, not a final population-level result. Full-population runs may require substantial memory because training rows expand across series and days. Record the sample size and data checksum when comparing experiments.
 
 ## Outputs
 
 Runs write local outputs under `artifacts/`:
 
-- `metrics.csv`: metrics for each fold, model, and volatility group, including series counts.
+- `metrics.csv`: metrics for each fold, model, and volatility group, including series counts and error totals.
+- `pooled_metrics.csv`: pooled WAPE and MAE across folds, alongside mean fold-level scores.
 - `run_manifest.json`: fixed seed, sample size, sales-file SHA-256, library versions, and label definition.
 
 WAPE is NaN if a group has no positive actual demand; MAE remains defined.

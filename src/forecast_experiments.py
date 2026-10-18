@@ -93,10 +93,6 @@ def recursive(model, history, cutoff, cal, codes):
         forecasts.append(pred); work=np.column_stack([work,pred])
     return np.stack(forecasts,axis=1)
 
-def metrics(actual,pred):
-    err=np.abs(actual-pred)
-    return (float(err.sum()/actual.sum()) if actual.sum() else float("nan"),float(err.mean()))
-
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data-dir",type=Path,default=Path("data/raw"))
@@ -117,14 +113,31 @@ def main():
         for name,pred in preds.items():
             for group in ("all","low","moderate","high"):
                 mask=np.ones(len(labels),dtype=bool) if group=="all" else labels==group
-                wape,mae=metrics(actual[mask],pred[mask])
+                error=np.abs(actual[mask]-pred[mask])
+                error_sum=float(error.sum())
+                demand_sum=float(actual[mask].sum())
+                wape=error_sum/demand_sum if demand_sum else float("nan")
+                mae=float(error.mean())
                 rows.append({"fold":fold,"train_through":days[cutoff],"validation_start":days[start],
                   "validation_end":days[start+HORIZON-1],"model":name,"volatility_group":group,
                   "series":int(mask.sum()),"WAPE":wape,"MAE":mae,
+                  "absolute_error_sum":error_sum,"actual_demand_sum":demand_sum,
+                  "forecast_observations":int(error.size),
                   "median_zero_week_share":float(np.median(zero_share[mask]))})
         print(f"Completed fold {fold}/{FOLDS}: {days[start]} to {days[start+HORIZON-1]}")
     args.output_dir.mkdir(parents=True,exist_ok=True)
-    (args.output_dir/"metrics.csv").write_text(pd.DataFrame(rows).to_csv(index=False),encoding="utf-8")
+    fold_metrics=pd.DataFrame(rows)
+    (args.output_dir/"metrics.csv").write_text(fold_metrics.to_csv(index=False),encoding="utf-8")
+    pooled=(fold_metrics.groupby(["model","volatility_group"],as_index=False)
+      .agg(absolute_error_sum=("absolute_error_sum","sum"),
+           actual_demand_sum=("actual_demand_sum","sum"),
+           forecast_observations=("forecast_observations","sum"),
+           folds=("fold","nunique"),
+           mean_fold_WAPE=("WAPE","mean"),mean_fold_MAE=("MAE","mean")))
+    pooled["pooled_WAPE"]=np.divide(pooled["absolute_error_sum"],pooled["actual_demand_sum"],
+      out=np.full(len(pooled),np.nan),where=pooled["actual_demand_sum"].to_numpy()>0)
+    pooled["pooled_MAE"]=pooled["absolute_error_sum"]/pooled["forecast_observations"]
+    (args.output_dir/"pooled_metrics.csv").write_text(pooled.to_csv(index=False),encoding="utf-8")
     manifest={"research_topic":"Evaluating the Effectiveness of AI-Based Demand Forecasting for Retail Businesses Under Volatile Demand Conditions",
       "seed":SEED,"horizon_days":HORIZON,"folds":FOLDS,"training_window_days":TRAIN_DAYS,
       "max_series":args.max_series,"series_evaluated":len(meta),
@@ -133,6 +146,7 @@ def main():
       "lightgbm":lgb.__version__,"run_timestamp_utc":datetime.now(timezone.utc).isoformat(),
       "volatility_definition":"terciles of CV among positive-demand weekly totals over the preceding 52 complete weeks; zero-week share reported separately"}
     (args.output_dir/"run_manifest.json").write_text(json.dumps(manifest,indent=2),encoding="utf-8")
-    print(f"Saved metrics to {args.output_dir/'metrics.csv'}")
+    print(f"Saved fold metrics to {args.output_dir/'metrics.csv'} and pooled metrics to {args.output_dir/'pooled_metrics.csv'}")
 
 if __name__=="__main__": main()
+
