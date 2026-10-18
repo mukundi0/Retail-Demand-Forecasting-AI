@@ -13,6 +13,11 @@ CODES = ["store_code", "category_code", "department_code", "state_code"]
 DYNAMIC = ["lag_1","lag_7","lag_14","lag_28","mean_7","mean_28","std_28","zero_share_28",
            "weekday","month","weekend","event_day","snap_CA","snap_TX","snap_WI"]
 FEATURES = DYNAMIC + CODES
+ERROR_COLUMNS = {
+    "seasonal_naive_7d": "absolute_error_seasonal_naive_7d",
+    "four_week_weekday_mean": "absolute_error_four_week_weekday_mean",
+    "lightgbm_recursive": "absolute_error_lightgbm_recursive",
+}
 
 def load_data(data_dir, max_series):
     sales_file, calendar_file = data_dir/"sales_train_validation.csv", data_dir/"calendar.csv"
@@ -93,15 +98,55 @@ def recursive(model, history, cutoff, cal, codes):
         forecasts.append(pred); work=np.column_stack([work,pred])
     return np.stack(forecasts,axis=1)
 
+def bootstrap_comparisons(series_metrics, replicates):
+    rng = np.random.default_rng(SEED)
+    rows = []
+    for group in ("all", "low", "moderate", "high"):
+        data = series_metrics if group == "all" else series_metrics[series_metrics["volatility_group"] == group]
+        columns = ["actual_demand_sum", "forecast_observations", *ERROR_COLUMNS.values()]
+        by_series = data.groupby("series_id", as_index=False)[columns].sum()
+        if by_series.empty:
+            continue
+        denominator = by_series["actual_demand_sum"].to_numpy(dtype=np.float64)
+        model_errors = {name:by_series[column].to_numpy(dtype=np.float64)
+                        for name,column in ERROR_COLUMNS.items()}
+        model_wape = model_errors["lightgbm_recursive"].sum()/denominator.sum()
+        sampled = rng.integers(0, len(by_series), size=(replicates, len(by_series)))
+        sample_denominator = denominator[sampled].sum(axis=1)
+        valid = sample_denominator > 0
+        for baseline in ("seasonal_naive_7d", "four_week_weekday_mean"):
+            baseline_wape = model_errors[baseline].sum()/denominator.sum()
+            improvement = (
+                model_errors[baseline][sampled[valid]].sum(axis=1)
+                - model_errors["lightgbm_recursive"][sampled[valid]].sum(axis=1)
+            ) / sample_denominator[valid]
+            rows.append({
+                "volatility_group":group,
+                "baseline_model":baseline,
+                "series":int(len(by_series)),
+                "bootstrap_replicates":int(len(improvement)),
+                "pooled_lightgbm_WAPE":float(model_wape),
+                "pooled_baseline_WAPE":float(baseline_wape),
+                "WAPE_improvement":float(baseline_wape-model_wape),
+                "improvement_95CI_low":float(np.quantile(improvement,0.025)),
+                "improvement_95CI_high":float(np.quantile(improvement,0.975)),
+                "relative_improvement_pct":float((baseline_wape-model_wape)/baseline_wape*100) if baseline_wape else float("nan"),
+                "bootstrap_probability_improvement_positive":float((improvement>0).mean()),
+            })
+    return pd.DataFrame(rows)
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data-dir",type=Path,default=Path("data/raw"))
     p.add_argument("--output-dir",type=Path,default=Path("artifacts"))
     p.add_argument("--max-series",type=int,default=1000,help="Seeded sample size; set 0 for all series.")
+    p.add_argument("--bootstrap-replicates",type=int,default=1000)
     args=p.parse_args()
+    if args.max_series < 0 or args.bootstrap_replicates < 1:
+        p.error("--max-series must be zero or positive and --bootstrap-replicates must be positive.")
     meta,y,codes,days,cal,sales_file=load_data(args.data_dir,args.max_series)
     starts=[y.shape[1]-HORIZON*FOLDS+i*HORIZON for i in range(FOLDS)]
-    rows=[]
+    rows=[]; per_series=[]
     for fold,start in enumerate(starts,1):
         cutoff=start-1; actual=y[:,start:start+HORIZON]; hist=y[:,:cutoff+1]
         labels,zero_share=volatility(hist)
@@ -111,6 +156,11 @@ def main():
         preds={"seasonal_naive_7d":naive,"four_week_weekday_mean":weekday,
                "lightgbm_recursive":recursive(model,hist,cutoff,cal,codes)}
         for name,pred in preds.items():
+            per_series.append(pd.DataFrame({
+                "fold":fold,"series_id":meta["id"].to_numpy(),"volatility_group":labels,
+                "actual_demand_sum":actual.sum(axis=1),"forecast_observations":actual.shape[1],
+                "model":name,"absolute_error_sum":np.abs(actual-pred).sum(axis=1),
+            }))
             for group in ("all","low","moderate","high"):
                 mask=np.ones(len(labels),dtype=bool) if group=="all" else labels==group
                 error=np.abs(actual[mask]-pred[mask])
@@ -138,15 +188,25 @@ def main():
       out=np.full(len(pooled),np.nan),where=pooled["actual_demand_sum"].to_numpy()>0)
     pooled["pooled_MAE"]=pooled["absolute_error_sum"]/pooled["forecast_observations"]
     (args.output_dir/"pooled_metrics.csv").write_text(pooled.to_csv(index=False),encoding="utf-8")
+    per_series_long=pd.concat(per_series,ignore_index=True)
+    per_series_wide=(per_series_long.pivot(
+      index=["fold","series_id","volatility_group","actual_demand_sum","forecast_observations"],
+      columns="model",values="absolute_error_sum").reset_index())
+    per_series_wide.columns.name=None
+    per_series_wide=per_series_wide.rename(columns=ERROR_COLUMNS)
+    (args.output_dir/"series_metrics.csv").write_text(per_series_wide.to_csv(index=False),encoding="utf-8")
+    bootstrap=bootstrap_comparisons(per_series_wide,args.bootstrap_replicates)
+    (args.output_dir/"bootstrap_comparison.csv").write_text(bootstrap.to_csv(index=False),encoding="utf-8")
     manifest={"research_topic":"Evaluating the Effectiveness of AI-Based Demand Forecasting for Retail Businesses Under Volatile Demand Conditions",
       "seed":SEED,"horizon_days":HORIZON,"folds":FOLDS,"training_window_days":TRAIN_DAYS,
       "max_series":args.max_series,"series_evaluated":len(meta),
+      "bootstrap_replicates":args.bootstrap_replicates,
       "sales_file_sha256":hashlib.sha256(sales_file.read_bytes()).hexdigest(),
       "python":platform.python_version(),"numpy":np.__version__,"pandas":pd.__version__,
       "lightgbm":lgb.__version__,"run_timestamp_utc":datetime.now(timezone.utc).isoformat(),
       "volatility_definition":"terciles of CV among positive-demand weekly totals over the preceding 52 complete weeks; zero-week share reported separately"}
     (args.output_dir/"run_manifest.json").write_text(json.dumps(manifest,indent=2),encoding="utf-8")
-    print(f"Saved fold metrics to {args.output_dir/'metrics.csv'} and pooled metrics to {args.output_dir/'pooled_metrics.csv'}")
+    print(f"Saved fold, pooled, per-series, and bootstrap metrics to {args.output_dir}")
 
 if __name__=="__main__": main()
 

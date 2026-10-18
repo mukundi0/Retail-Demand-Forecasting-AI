@@ -1,75 +1,56 @@
 # Retail Demand Forecasting AI
 
-Research phase for **“Evaluating the Effectiveness of AI-Based Demand Forecasting for Retail Businesses Under Volatile Demand Conditions.”**
+Research implementation for **“Evaluating the Effectiveness of AI-Based Demand Forecasting for Retail Businesses Under Volatile Demand Conditions.”**
 
-The original `01_Data_Exploration.ipynb` is retained unchanged. This phase adds reproducible 28-day experiments with chronological validation, demand-volatility groups, traditional baselines, and initial LightGBM training.
+The original exploration notebook remains unchanged. The next notebook documents the chronological experiment, pooled scores, and series-level bootstrap intervals.
+
+## Repository map
+
+- `01_Data_Exploration.ipynb`: original data exploration; retained as the initial research record.
+- `src/forecast_experiments.py`: data preparation, three-fold forecasting, pooled scoring, and bootstrap comparison.
+- `notebooks/02_Chronological_Experiments.ipynb`: experiment protocol, current 5,000-series results, and an interactive results summary.
+- `requirements.txt`: pinned Python dependencies.
+- `data/raw/`: local M5 input files; not committed.
+- `artifacts/`: generated metrics and run manifest; not committed.
 
 ## Experiment design
 
-The runner `src/forecast_experiments.py` uses seed 42 and evaluates a deterministic sample of 1,000 item-store series by default. Set `--max-series 0` to include all series. It creates three non-overlapping 28-day validation folds at the end of the observed sales history. Each fold trains only on earlier observations, using a rolling 365-day window of daily examples; the final 28 training days form a chronological early-stopping window.
+The runner uses seed 42 and samples 1,000 item-store series by default. Set `--max-series 5000` for the larger pilot or `--max-series 0` to use every series. It evaluates three non-overlapping 28-day chronological folds at the end of observed history. Each fold trains from earlier data using a rolling 365-day window, with the final 28 training days used for chronological early stopping.
 
-Models compared:
+The models are:
 
 - **7-day seasonal naive:** repeat the last observed week.
-- **Four-week weekday mean:** average the last four observations for each weekday and repeat the resulting pattern.
-- **LightGBM recursive:** one-step model using demand lags, rolling summaries, weekday/month, calendar event and SNAP indicators; forecast values are fed back through the 28-day horizon.
+- **Four-week weekday mean:** average the previous four observations for each weekday and repeat that pattern.
+- **LightGBM recursive:** one-step model with lag and rolling-demand features, weekday/month, event-day, and SNAP indicators. Predictions feed into later forecast days.
 
-Fold-level WAPE and MAE are reported overall and by volatility group. The separate pooled summary combines absolute error and actual demand across all three folds before calculating pooled WAPE; it also reports pooled MAE and the mean fold-level scores. At each fold cutoff, series are assigned to relative terciles of coefficient of variation across positive-demand weekly totals in the preceding 52 complete weeks. The zero-demand-week share is reported separately. Validation-period demand is not used to calculate labels.
+Volatility groups are recalculated at each fold cutoff as relative terciles of coefficient of variation across positive-demand weekly totals during the preceding 52 complete weeks. The zero-demand-week share is reported separately.
 
-## Data setup
+## Scores and uncertainty
 
-Download the public M5 Forecasting data and put these files in `data/raw/`:
+`metrics.csv` contains WAPE and MAE by fold, model, and volatility group. `pooled_metrics.csv` combines absolute error and actual demand across folds before calculating pooled WAPE, and combines absolute error and observation counts for pooled MAE.
 
-- `sales_train_validation.csv`
-- `calendar.csv`
+`bootstrap_comparison.csv` reports a paired, series-cluster bootstrap comparison of LightGBM against **both** traditional baselines. Each replicate samples series IDs with replacement and keeps all of a sampled series’ fold observations together. Positive WAPE improvement favors LightGBM. The 95% interval uses the 2.5th and 97.5th percentiles; the bootstrap probability is the share of replicates with positive improvement, not a p-value. Volatility-group results use the series’ fold-specific labels. Intervals are conditional on this sample and model setup; they do not measure variation from drawing a new 5,000-series sample or tuning the models.
 
-The experiment uses daily unit sales and calendar date, weekday, event-day, and SNAP indicators. Prices and evaluation/test labels are not used. Raw data is excluded from version control.
+`series_metrics.csv` contains the compact per-series fold errors used to reproduce those intervals. `run_manifest.json` records seed, sample size, input checksum, dependency versions, and bootstrap count.
 
-```text
-data/
-  raw/
-    calendar.csv
-    sales_train_validation.csv
-```
+## Data and run instructions
 
-## Run
+Place the public M5 files `sales_train_validation.csv` and `calendar.csv` under `data/raw/`. The script uses unit sales and calendar features; it does not use prices or test labels.
 
-Python 3.10 or newer:
+Use Python 3.10 or newer:
 
 ```bash
 python -m venv .venv
 # Windows: .venv\Scripts\activate
 # macOS/Linux: source .venv/bin/activate
 python -m pip install -r requirements.txt
-python src/forecast_experiments.py
+python src/forecast_experiments.py --max-series 5000 --bootstrap-replicates 1000
 ```
 
-To scale the sample before running all series:
+The notebook reads the generated files under `artifacts/`. Full-population runs can use substantial memory because training features expand across series and dates. Increase the sample size in stages before using `--max-series 0`.
 
-```bash
-python src/forecast_experiments.py --max-series 5000
-python src/forecast_experiments.py --max-series 0
-```
+## Current 5,000-series pilot
 
-The 1,000-series default is an initial pipeline comparison, not a final population-level result. Full-population runs may require substantial memory because training rows expand across series and days. Record the sample size and data checksum when comparing experiments.
+With seed 42 and the supplied sales file (SHA-256 recorded in the run manifest), pooled WAPE was 0.6928 for LightGBM, 0.7764 for the weekday-mean baseline, and 0.8753 for seasonal naive. LightGBM’s improvement over the weekday-mean baseline was 0.0836 WAPE points overall (series-cluster bootstrap 95% interval 0.0758–0.0919). The new notebook reports the subgroup comparisons.
 
-## Outputs
-
-Runs write local outputs under `artifacts/`:
-
-- `metrics.csv`: metrics for each fold, model, and volatility group, including series counts and error totals.
-- `pooled_metrics.csv`: pooled WAPE and MAE across folds, alongside mean fold-level scores.
-- `run_manifest.json`: fixed seed, sample size, sales-file SHA-256, library versions, and label definition.
-
-WAPE is NaN if a group has no positive actual demand; MAE remains defined.
-
-## Limitations
-
-This is an initial fixed-parameter model, not a tuned result. The recursive model may accumulate error across the 28-day horizon. The current phase uses unit sales and calendar covariates; it does not incorporate prices, promotions beyond calendar indicators, uncertainty intervals, or specialized intermittent-demand methods.
-
-## Project files
-
-- `01_Data_Exploration.ipynb`: original exploration, preserved.
-- `src/forecast_experiments.py`: reproducible experiment runner.
-- `requirements.txt`: pinned runtime dependencies.
-- `.gitignore`: excludes local datasets, environments, caches, and generated artifacts.
+Treat these as pilot estimates. This sample and fixed model configuration do not establish performance for every M5 series or other retailers. The model does not yet use price/promotion features, produce uncertainty forecasts, or specialize for intermittent demand.
