@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Research experiment data and generated outputs
+data/raw/
+data/processed/
+artifacts/
+results/
