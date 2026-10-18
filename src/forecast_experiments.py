@@ -74,23 +74,36 @@ def volatility(history):
 
 def make_features(history, target_days, cal, codes, prices=None):
     n = history.shape[0]
+    shape = (n,len(target_days))
     result = {}
     for lag in (1,7,14,28): result[f"lag_{lag}"] = history[:,target_days-lag].T.reshape(-1)
-    prev = history[:,target_days[:,None]-np.arange(1,29)]
-    result["mean_7"] = prev[:,:,:7].mean(axis=2).T.reshape(-1)
-    result["mean_28"] = prev.mean(axis=2).T.reshape(-1)
-    result["std_28"] = prev.std(axis=2).T.reshape(-1)
-    result["zero_share_28"] = (prev==0).mean(axis=2).T.reshape(-1)
+    sum_7=np.zeros(shape,dtype=np.float32); sum_28=np.zeros(shape,dtype=np.float32)
+    sum_sq_28=np.zeros(shape,dtype=np.float32); zero_28=np.zeros(shape,dtype=np.int8)
+    for lag in range(1,29):
+        values=history[:,target_days-lag]
+        sum_28 += values
+        sum_sq_28 += values*values
+        zero_28 += values==0
+        if lag<=7: sum_7 += values
+    mean_28=sum_28/28
+    result["mean_7"] = (sum_7/7).T.reshape(-1)
+    result["mean_28"] = mean_28.T.reshape(-1)
+    result["std_28"] = np.sqrt(np.maximum(sum_sq_28/28-mean_28*mean_28,0)).T.reshape(-1)
+    result["zero_share_28"] = (zero_28/28).T.reshape(-1)
     for c in ["weekday","month","weekend","event_day","snap_CA","snap_TX","snap_WI"]:
         result[c] = np.repeat(cal.iloc[target_days][c].to_numpy(),n)
     features = DYNAMIC.copy()
     if prices is not None:
         current = prices[:,target_days]
         previous_week = prices[:,target_days-7]
-        recent = prices[:,target_days[:,None]-np.arange(1,29)]
-        recent_count = np.isfinite(recent).sum(axis=2)
-        recent_mean = np.divide(np.nansum(recent,axis=2),recent_count,
-          out=np.full(recent_count.shape,np.nan,dtype=np.float32),where=recent_count>0)
+        recent_sum=np.zeros(shape,dtype=np.float32); recent_count=np.zeros(shape,dtype=np.int8)
+        for lag in range(1,29):
+            values=prices[:,target_days-lag]
+            present=np.isfinite(values)
+            recent_sum += np.where(present,values,0)
+            recent_count += present
+        recent_mean=np.divide(recent_sum,recent_count,
+          out=np.full(shape,np.nan,dtype=np.float32),where=recent_count>0)
         result["sell_price"] = current.T.reshape(-1)
         result["price_change_7d_pct"] = np.divide(current-previous_week,previous_week,
           out=np.full(current.shape,np.nan,dtype=np.float32),where=previous_week>0).T.reshape(-1)
@@ -140,22 +153,25 @@ def bootstrap_comparisons(series_metrics, replicates):
         denominator = by_series["actual_demand_sum"].to_numpy(dtype=np.float64)
         model_errors = {name:by_series[column].to_numpy(dtype=np.float64)
                         for name,column in available.items()}
-        sampled = rng.integers(0, len(by_series), size=(replicates, len(by_series)))
-        sample_denominator = denominator[sampled].sum(axis=1)
-        valid = sample_denominator > 0
         lightgbm_models = [name for name in model_errors if name.startswith("lightgbm_recursive")]
         comparisons = [("baseline",baseline,candidate)
                        for candidate in lightgbm_models
                        for baseline in ("seasonal_naive_7d","four_week_weekday_mean")]
         if "lightgbm_recursive" in model_errors and "lightgbm_recursive_price" in model_errors:
             comparisons.append(("price_ablation","lightgbm_recursive","lightgbm_recursive_price"))
+        draws={(comparison,reference,candidate):[] for comparison,reference,candidate in comparisons}
+        for offset in range(0,replicates,100):
+            sampled=rng.integers(0,len(by_series),size=(min(100,replicates-offset),len(by_series)))
+            sample_denominator=denominator[sampled].sum(axis=1)
+            valid=sample_denominator>0
+            sample_errors={name:errors[sampled[valid]].sum(axis=1) for name,errors in model_errors.items()}
+            for comparison,reference,candidate in comparisons:
+                draws[(comparison,reference,candidate)].append(
+                    (sample_errors[reference]-sample_errors[candidate])/sample_denominator[valid])
         for comparison,reference,candidate in comparisons:
             reference_wape = model_errors[reference].sum()/denominator.sum()
             candidate_wape = model_errors[candidate].sum()/denominator.sum()
-            improvement = (
-                model_errors[reference][sampled[valid]].sum(axis=1)
-                - model_errors[candidate][sampled[valid]].sum(axis=1)
-            ) / sample_denominator[valid]
+            improvement=np.concatenate(draws[(comparison,reference,candidate)])
             rows.append({
                 "volatility_group":group,
                 "comparison":comparison,
