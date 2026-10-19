@@ -1,165 +1,95 @@
 # Retail Demand Forecasting AI
 
-Research topic: **Evaluating the Effectiveness of AI-Based Demand Forecasting for Retail Businesses Under Volatile Demand Conditions.** The original exploration notebook, `01_Data_Exploration.ipynb`, is preserved unchanged.
+A beginner-friendly research project that predicts daily product demand for retail stores. It uses the public M5 forecasting data and LightGBM, a tree-based machine-learning library.
 
-## Repository map
+**Recommended starting point:** read [`docs/PROJECT_GUIDE.md`](docs/PROJECT_GUIDE.md), then open [`notebooks/03_Dataset_to_Model_70_30.ipynb`](notebooks/03_Dataset_to_Model_70_30.ipynb) and run the cells in order. That notebook is the complete chronological 70% train / 30% test workflow.
 
-- `01_Data_Exploration.ipynb` — original exploratory notebook.
-- `notebooks/02_Chronological_Experiments.ipynb` — chronological research protocol and full M5 findings.
-- `notebooks/03_Dataset_to_Model_70_30.ipynb` — end-to-end 70/30 chronological holdout workflow, from raw data through training and evaluation.
-- `src/forecast_experiments.py` — three-fold evaluation of baselines and LightGBM models.
-- `src/train_final_model.py` — final full-data fit and saved model bundle.
-- `src/forecast_inference.py` — reusable 28-day inference helper for a future API.
-- `reports/m5_5000_pilot/` — earlier 5,000-series pilot snapshot.
-- `reports/m5_full_population/` — complete 30,490-series evaluation snapshot.
-- `data/raw/` — local M5 files; ignored by Git.
-- `artifacts/` — generated metrics and model bundle; ignored by Git.
-- `requirements.txt` — pinned Python dependencies.
+## What this project does
 
-## Data files
+For each item sold in each store, it uses past sales, calendar information, item/store identifiers, and scheduled prices to forecast future unit sales. The evaluation compares the machine-learning model against simple forecasts based on recent sales. The holdout split is by date: all training dates come before all test dates.
 
-Place these files under `data/raw/`:
+## Project structure
 
-- `sales_train_validation.csv`
-- `calendar.csv`
-- `sell_prices.csv`
-
-The price table supplies scheduled prices for price-aware training and forecasts. Raw data and trained model files are deliberately kept local. The run manifests include the SHA-256 checksums of the sales and price files.
-
-## Run training in Google Colab
-
-Colab is a practical option if Windows selects MSYS2 Python or cannot install the pinned wheels. The current project data files total about 309 MiB. ZIP the repository folder itself so the archive contains a top-level `Retail-Demand-Forecasting-AI/` folder with `src/`, `requirements.txt`, and `data/raw/` inside it. Upload that ZIP to Google Drive so it can be copied into a fresh Colab runtime. Do not include `.venv*`, `.git`, or generated artifacts.
-
-In a new Colab notebook, select a CPU runtime, then run these cells in order. LightGBM in this project is configured for CPU training; a GPU runtime does not accelerate this code.
-
-```python
-from google.colab import drive
-drive.mount('/content/drive')
+```text
+Retail-Demand-Forecasting-AI/
+├── README.md                         # Project overview and quick links
+├── requirements.txt                  # Python packages used by this project
+├── docs/
+│   └── PROJECT_GUIDE.md              # Beginner guide, setup, concepts, troubleshooting
+├── notebooks/
+│   ├── 01_Data_Exploration.ipynb     # Initial dataset exploration
+│   ├── 02_Chronological_Experiments.ipynb # Earlier multi-fold research results
+│   └── 03_Dataset_to_Model_70_30.ipynb   # Main end-to-end training/evaluation
+├── src/
+│   ├── forecast_experiments.py        # Data loading, features, shared model helpers
+│   ├── forecast_holdout.py            # 70/30 training and rolling evaluation runner
+│   ├── train_final_model.py           # Optional model fit on all available dates
+│   ├── forecast_inference.py          # Load a model and forecast one item-store series
+│   └── api.py                         # Optional local FastAPI service
+├── reports/                           # Small, committed summaries of prior experiments
+├── data/raw/                          # Downloaded source CSVs; ignored by Git
+└── artifacts/                         # Locally generated models/reports; ignored by Git
 ```
 
-Set `ZIP_PATH` to the uploaded archive's path in Drive, then stage it on the runtime's local disk:
+Virtual environments such as `.venv_cp312/`, caches, raw datasets, and generated model artifacts are local working files; they are intentionally excluded from Git.
 
-```python
-from pathlib import Path
-import shutil, zipfile
+## Quick start
 
-ZIP_PATH = Path('/content/drive/MyDrive/Retail-Demand-Forecasting-AI.zip')
-PROJECT = Path('/content/Retail-Demand-Forecasting-AI')
-ARCHIVE = Path('/content/project.zip')
-shutil.copy2(ZIP_PATH, ARCHIVE)
-with zipfile.ZipFile(ARCHIVE) as bundle:
-    bundle.extractall('/content')
-print('Project:', PROJECT)
-print('Sales data:', (PROJECT / 'data/raw/sales_train_validation.csv').exists())
-print('Price data:', (PROJECT / 'data/raw/sell_prices.csv').exists())
-```
+1. Use 64-bit CPython 3.12. Install it from python.org if it is not already available.
+2. Create an environment and install packages:
 
-Install the pinned packages and verify imports:
+   ```powershell
+   py -3.12 -m venv .venv_cp312
+   .\.venv_cp312\Scripts\Activate.ps1
+   python -m pip install -r requirements.txt
+   python -m pip install jupyterlab ipykernel
+   python -m ipykernel install --user --name retail-demand --display-name "Python (retail demand)"
+   ```
 
-```python
-%cd /content/Retail-Demand-Forecasting-AI
-%pip install -r requirements.txt
-import numpy, pandas, lightgbm
-print(numpy.__version__, pandas.__version__, lightgbm.__version__)
-```
+   On macOS/Linux, use `python3 -m venv .venv_cp312` and `source .venv_cp312/bin/activate` instead.
 
-First train a 1,000-series sample to confirm the pipeline works, then train all series. The two runs save separate bundles:
+3. Put the M5 files listed below in `data/raw/`.
+4. Start Jupyter with `jupyter lab` from the project root, open `notebooks/03_Dataset_to_Model_70_30.ipynb`, select the `Python (retail demand)` kernel, and run all cells from top to bottom. Set `MAX_SERIES = 1000` for a faster pipeline check; leave it at `0` for the full dataset.
 
-```python
-!python src/train_final_model.py --data-dir data/raw --output-dir /content/drive/MyDrive/retail-smoke-model --max-series 1000
-!python src/train_final_model.py --data-dir data/raw --output-dir /content/drive/MyDrive/retail-final-model --max-series 0
-```
+The notebook saves the trained 70%-only model and its evaluation to `artifacts/holdout_70_30/`. It is CPU based and the full dataset can require substantial memory and time.
 
-The output should include `lightgbm_price.txt` and `model_metadata.json`. To run the API within the Colab runtime, start Uvicorn bound to localhost and check `/health`; the runtime stops when Colab disconnects, so copy the model bundle from Drive before ending the session if you need it locally. Colab resource availability and session limits vary, so use a high-RAM runtime if the full-data fit runs out of memory. See [Colab's resource FAQ](https://research.google.com/colaboratory/faq.html#resource-limits) for current runtime limits.
+## Required data
 
-## Run the chronological evaluation
+Place these CSV files in `data/raw/`:
 
-Use standard 64-bit CPython 3.10 or newer. On Windows, use the Python Launcher (`py`) or a CPython installation from python.org; MSYS2/UCRT Python is not a supported interpreter for these pinned Windows wheels. Python 3.12 is the recommended Windows version.
+- `sales_train_validation.csv` — daily unit sales per product-store series.
+- `calendar.csv` — dates, events, weekdays, and SNAP program flags.
+- `sell_prices.csv` — weekly scheduled prices for each product and store.
 
-On Windows, create and activate the environment with:
+These M5 files are not committed because they are large. The data guide explains where to get them, what the columns mean, and how to check the setup.
 
-```powershell
-py -3.12 -m venv .venv_cp312
-.\.venv_cp312\Scripts\Activate.ps1
-```
+## Command-line alternative
 
-On macOS/Linux, use:
-
-```bash
-python3 -m venv .venv_cp312
-source .venv_cp312/bin/activate
-```
-
-Then install the dependencies and start the evaluation:
-
-```bash
-python -m pip install -r requirements.txt
-python src/forecast_experiments.py --data-dir data/raw --output-dir artifacts/full_m5 --max-series 0 --bootstrap-replicates 1000
-```
-
-The evaluation uses three chronological 28-day folds, a rolling 365-day training window, and seed 42. It compares 7-day seasonal naive, four-week weekday mean, recursive LightGBM without prices, and price-aware LightGBM. Volatility is grouped at each fold cutoff using terciles of the coefficient of variation of positive-demand weekly totals over the preceding 52 complete weeks. Zero-demand-week share is reported separately.
-
-## Run a chronological 70/30 holdout
-
-For a strict train/test split, use `src/forecast_holdout.py`. It trains using the first 70% of daily observations, tunes boosting rounds using a validation window contained within that training period, and evaluates the final 30% in rolling, non-overlapping 28-day forecast windows. At each new window, sales from earlier test windows are treated as observed history; no actual sales from the current forecast window enter its features. It compares price-aware LightGBM with seasonal-naive and four-week weekday-mean baselines. Results include pooled and volatility-group WAPE, MAE, RMSE, and series-cluster bootstrap intervals. The trained 70%-only model and metadata are saved alongside the metrics.
-
-Run a small pipeline check first, followed by the complete 30,490-series population:
+From the repository root, run a 1,000-series smoke run:
 
 ```powershell
 python src/forecast_holdout.py --data-dir data/raw --output-dir artifacts/holdout_70_30_smoke --max-series 1000 --bootstrap-replicates 50
+```
+
+Then run the full dataset:
+
+```powershell
 python src/forecast_holdout.py --data-dir data/raw --output-dir artifacts/holdout_70_30 --max-series 0 --bootstrap-replicates 1000
 ```
 
-The full-data report is in `artifacts/holdout_70_30/metrics.csv` and `bootstrap_comparison.csv`; `run_manifest.json` records the exact date split, forecast-window size, data checksums, and software versions. A 70/30 split on dates is used because randomly splitting daily observations would leak future information into training. Add `--reuse-model artifacts/holdout_70_30/lightgbm_price.txt` to recompute the rolling-window evaluation without retraining the same 70%-trained model.
+The notebook presents the same stages interactively. Both use the feature and evaluation helpers in `src/forecast_experiments.py` and `src/forecast_holdout.py`.
 
-The same process is documented as sequential notebook cells in [`notebooks/03_Dataset_to_Model_70_30.ipynb`](notebooks/03_Dataset_to_Model_70_30.ipynb). Open it from the repository root and run all cells; set `MAX_SERIES = 1000` for a quick pipeline check or leave it at `0` for the full population. It uses the shared feature and evaluation helpers under `src/`, keeping the notebook consistent with the command-line runner.
+## Other notebooks and scripts
 
-## Full-population result
+- `notebooks/01_Data_Exploration.ipynb` introduces the dataset through exploratory charts and tables.
+- `notebooks/02_Chronological_Experiments.ipynb` records an earlier experiment with three rolling validation folds. Its figures are research results, not the 70/30 holdout result.
+- `src/train_final_model.py` is an optional post-evaluation workflow that fits a model using available data for future inference. Because it uses all available dates, it is not the model to use when reporting a 70/30 test score.
+- `src/api.py` serves forecasts locally after a model bundle has been created. See the guide for the API commands and request format.
 
-The supplied M5 data contains 30,490 item-store series. The completed evaluation covers three folds and 2,561,160 forecast observations per model. Pooled scores:
+## Previously recorded multi-fold results
 
-| Model | Pooled WAPE | Pooled MAE |
-|---|---:|---:|
-| 7-day seasonal naive | 0.8796 | 1.2141 |
-| Four-week weekday mean | 0.7788 | 1.0750 |
-| LightGBM, no price features | 0.6972 | 0.9625 |
-| LightGBM, scheduled price features | 0.6939 | 0.9579 |
+The committed `reports/m5_full_population/` files summarize a separate three-fold experiment over 30,490 series. They compare naive, weekday-average, and LightGBM models; those values should not be mixed with the newer 70/30 holdout metrics. The exact split and data checksums for a holdout run are stored in its local `run_manifest.json`.
 
-Compared with the weekday-mean baseline, price-aware LightGBM reduced WAPE by 0.0848 points overall (95% series-cluster bootstrap interval 0.0808–0.0888). The improvements were 0.0399 (0.0359–0.0436) in low volatility, 0.1196 (0.1105–0.1271) in moderate volatility, and 0.1734 (0.1652–0.1815) in high volatility. Price features gave a small overall improvement over the no-price LightGBM; in the low-volatility subgroup their WAPE was effectively tied. These are M5 results and should not be generalized automatically to other retailers.
+## Limitations
 
-Fold-level, pooled, bootstrap, and run-manifest files are in `reports/m5_full_population/`. Per-series bootstrap inputs are generated locally and are not committed.
-
-## Train the final model bundle
-
-After evaluation, create the deployment-ready price-aware LightGBM model:
-
-```bash
-python src/train_final_model.py --data-dir data/raw --output-dir artifacts/final_model --max-series 0
-```
-
-This selects the boosting-round count using the latest chronological 28-day early-stopping window, then refits on the most recent 365 days of labeled observations across the selected population. For the supplied full M5 data, the selected count was 300 rounds across all 30,490 series. The command writes `lightgbm_price.txt` and `model_metadata.json` locally; Git ignores these generated model artifacts.
-
-## Forecast interface and next step
-
-`src/forecast_inference.py` provides `load_model_bundle()` and `forecast_series()`. A forecast request needs one series' static item/store metadata, the latest 28 daily sales, the latest 28 prices, and the next 28 calendar rows plus scheduled prices. Calendar rows use `weekday`, `month`, `weekend`, `event_day`, `snap_CA`, `snap_TX`, and `snap_WI`. The helper returns 28 non-negative predictions. These functions are the inference layer for the next step: adding and running a FastAPI service.
-
-## Limits
-
-This phase evaluates one retail dataset and one seeded research setup. It does not tune hyperparameters, estimate forecast uncertainty, or use a standalone promotion field. The model and results are an initial research prototype, not a production service.
-
-
-## Run the local API
-
-Install the pinned packages, create the full-data model bundle, and start the service from the repository root:
-
-```bash
-python -m pip install -r requirements.txt
-python src/train_final_model.py --data-dir data/raw --output-dir artifacts/final_model --max-series 0
-python -m uvicorn src.api:app --host 127.0.0.1 --port 8000
-```
-
-The API loads `artifacts/final_model` on startup. Set `FORECAST_MODEL_DIR` if the bundle is stored elsewhere. Check `GET /health`, open [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs), then use `POST /forecast` to request a prediction. The docs page lets you submit a request interactively.
-
-A forecast request is for one product-store series and includes its item ID, store/category/department/state, the latest 28 daily sales, the latest 28 prices, and the next 28 dates with event/SNAP flags and scheduled prices. The response contains one non-negative unit forecast per day. Missing prices can be sent as JSON `null`. Dates must be the 28 consecutive days immediately after `last_observed_date`.
-
-This is a local research prototype. It has no authentication and should stay bound to `127.0.0.1`; do not expose it to the public internet as-is.
+These results describe the supplied M5 data and this specific split and setup. They do not prove performance for another retailer. This is a research prototype; it does not tune every hyperparameter or provide prediction intervals for individual forecasts.
