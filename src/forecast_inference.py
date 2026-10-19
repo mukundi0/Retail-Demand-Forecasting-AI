@@ -7,7 +7,10 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from forecast_experiments import CODES, DYNAMIC, PRICE_FEATURES, recursive
+try:
+    from .forecast_experiments import CODES, recursive
+except ImportError:  # Supports direct execution from the src directory.
+    from forecast_experiments import CODES, recursive
 
 STATIC = ["store_id", "cat_id", "dept_id", "state_id"]
 CALENDAR_COLUMNS = ["weekday", "month", "weekend", "event_day", "snap_CA", "snap_TX", "snap_WI"]
