@@ -71,3 +71,20 @@ This selects the boosting-round count using the latest chronological 28-day earl
 ## Limits
 
 This phase evaluates one retail dataset and one seeded research setup. It does not tune hyperparameters, estimate forecast uncertainty, or use a standalone promotion field. The model and results are an initial research prototype, not a production service.
+
+
+## Run the local API
+
+Install the pinned packages, create the full-data model bundle, and start the service from the repository root:
+
+```bash
+python -m pip install -r requirements.txt
+python src/train_final_model.py --data-dir data/raw --output-dir artifacts/final_model --max-series 0
+python -m uvicorn src.api:app --host 127.0.0.1 --port 8000
+```
+
+The API loads `artifacts/final_model` on startup. Set `FORECAST_MODEL_DIR` if the bundle is stored elsewhere. Check `GET /health`, open [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs), then use `POST /forecast` to request a prediction. The docs page lets you submit a request interactively.
+
+A forecast request is for one product-store series and includes its item ID, store/category/department/state, the latest 28 daily sales, the latest 28 prices, and the next 28 dates with event/SNAP flags and scheduled prices. The response contains one non-negative unit forecast per day. Missing prices can be sent as JSON `null`. Dates must be the 28 consecutive days immediately after `last_observed_date`.
+
+This is a local research prototype. It has no authentication and should stay bound to `127.0.0.1`; do not expose it to the public internet as-is.
