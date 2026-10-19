@@ -6,6 +6,7 @@ Research topic: **Evaluating the Effectiveness of AI-Based Demand Forecasting fo
 
 - `01_Data_Exploration.ipynb` — original exploratory notebook.
 - `notebooks/02_Chronological_Experiments.ipynb` — chronological research protocol and full M5 findings.
+- `notebooks/03_Dataset_to_Model_70_30.ipynb` — end-to-end 70/30 chronological holdout workflow, from raw data through training and evaluation.
 - `src/forecast_experiments.py` — three-fold evaluation of baselines and LightGBM models.
 - `src/train_final_model.py` — final full-data fit and saved model bundle.
 - `src/forecast_inference.py` — reusable 28-day inference helper for a future API.
@@ -97,6 +98,21 @@ python src/forecast_experiments.py --data-dir data/raw --output-dir artifacts/fu
 ```
 
 The evaluation uses three chronological 28-day folds, a rolling 365-day training window, and seed 42. It compares 7-day seasonal naive, four-week weekday mean, recursive LightGBM without prices, and price-aware LightGBM. Volatility is grouped at each fold cutoff using terciles of the coefficient of variation of positive-demand weekly totals over the preceding 52 complete weeks. Zero-demand-week share is reported separately.
+
+## Run a chronological 70/30 holdout
+
+For a strict train/test split, use `src/forecast_holdout.py`. It trains using the first 70% of daily observations, tunes boosting rounds using a validation window contained within that training period, and evaluates the final 30% in rolling, non-overlapping 28-day forecast windows. At each new window, sales from earlier test windows are treated as observed history; no actual sales from the current forecast window enter its features. It compares price-aware LightGBM with seasonal-naive and four-week weekday-mean baselines. Results include pooled and volatility-group WAPE, MAE, RMSE, and series-cluster bootstrap intervals. The trained 70%-only model and metadata are saved alongside the metrics.
+
+Run a small pipeline check first, followed by the complete 30,490-series population:
+
+```powershell
+python src/forecast_holdout.py --data-dir data/raw --output-dir artifacts/holdout_70_30_smoke --max-series 1000 --bootstrap-replicates 50
+python src/forecast_holdout.py --data-dir data/raw --output-dir artifacts/holdout_70_30 --max-series 0 --bootstrap-replicates 1000
+```
+
+The full-data report is in `artifacts/holdout_70_30/metrics.csv` and `bootstrap_comparison.csv`; `run_manifest.json` records the exact date split, forecast-window size, data checksums, and software versions. A 70/30 split on dates is used because randomly splitting daily observations would leak future information into training. Add `--reuse-model artifacts/holdout_70_30/lightgbm_price.txt` to recompute the rolling-window evaluation without retraining the same 70%-trained model.
+
+The same process is documented as sequential notebook cells in [`notebooks/03_Dataset_to_Model_70_30.ipynb`](notebooks/03_Dataset_to_Model_70_30.ipynb). Open it from the repository root and run all cells; set `MAX_SERIES = 1000` for a quick pipeline check or leave it at `0` for the full population. It uses the shared feature and evaluation helpers under `src/`, keeping the notebook consistent with the command-line runner.
 
 ## Full-population result
 
