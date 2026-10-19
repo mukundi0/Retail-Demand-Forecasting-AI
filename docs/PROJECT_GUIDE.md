@@ -2,6 +2,8 @@
 
 This guide explains what the project does, where its files belong, how to run it, and how to understand the results. You do not need to know machine learning before starting, but basic Python familiarity will help.
 
+If the technical details feel like too much, start with the shorter [plain-language beginner guide](BEGINNER_GUIDE.md). The end-to-end notebook is also written as a CRISP-DM walkthrough.
+
 ## 1. The project in one sentence
 
 We train a program to estimate how many units of each product will sell in each store, using earlier sales, product and store identifiers, calendar details, and scheduled prices.

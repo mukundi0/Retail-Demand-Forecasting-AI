@@ -2,7 +2,7 @@
 
 A beginner-friendly research project that predicts daily product demand for retail stores. It uses the public M5 forecasting data and LightGBM, a tree-based machine-learning library.
 
-**Recommended starting point:** read [`docs/PROJECT_GUIDE.md`](docs/PROJECT_GUIDE.md), then open [`notebooks/03_Dataset_to_Model_70_30.ipynb`](notebooks/03_Dataset_to_Model_70_30.ipynb) and run the cells in order. That notebook is the complete chronological 70% train / 30% test workflow.
+**Recommended starting point:** read the plain-language [`beginner guide`](docs/BEGINNER_GUIDE.md), then open [`notebooks/03_Dataset_to_Model_70_30.ipynb`](notebooks/03_Dataset_to_Model_70_30.ipynb). The notebook maps the actual work to CRISP-DM and runs the chronological 70% train / 30% test workflow, then demonstrates loading the saved model for a forecast.
 
 ## What this project does
 
@@ -15,11 +15,12 @@ Retail-Demand-Forecasting-AI/
 ├── README.md                         # Project overview and quick links
 ├── requirements.txt                  # Python packages used by this project
 ├── docs/
-│   └── PROJECT_GUIDE.md              # Beginner guide, setup, concepts, troubleshooting
+│   ├── BEGINNER_GUIDE.md              # Plain-language explanation of the full process
+│   └── PROJECT_GUIDE.md              # Detailed setup, concepts, and troubleshooting
 ├── notebooks/
 │   ├── 01_Data_Exploration.ipynb     # Initial dataset exploration
 │   ├── 02_Chronological_Experiments.ipynb # Earlier multi-fold research results
-│   └── 03_Dataset_to_Model_70_30.ipynb   # Main end-to-end training/evaluation
+│   └── 03_Dataset_to_Model_70_30.ipynb   # CRISP-DM walkthrough + training/evaluation
 ├── src/
 │   ├── forecast_experiments.py        # Data loading, features, shared model helpers
 │   ├── forecast_holdout.py            # 70/30 training and rolling evaluation runner
@@ -77,7 +78,7 @@ Then run the full dataset:
 python src/forecast_holdout.py --data-dir data/raw --output-dir artifacts/holdout_70_30 --max-series 0 --bootstrap-replicates 1000
 ```
 
-The notebook presents the same stages interactively. Both use the feature and evaluation helpers in `src/forecast_experiments.py` and `src/forecast_holdout.py`.
+The notebook presents the stages interactively and maps them to the six CRISP-DM phases. Both use the feature and evaluation helpers in `src/forecast_experiments.py` and `src/forecast_holdout.py`.
 
 ## Other notebooks and scripts
 
