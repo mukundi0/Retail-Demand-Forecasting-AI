@@ -10,9 +10,10 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from forecast_experiments import (
-    CODES, HORIZON, SEED, TRAIN_DAYS, fit, load_data, make_features,
-)
+try:
+    from .forecast_experiments import CODES, HORIZON, SEED, TRAIN_DAYS, fit, load_data, make_features
+except ImportError:  # Supports direct script execution from the repository root.
+    from forecast_experiments import CODES, HORIZON, SEED, TRAIN_DAYS, fit, load_data, make_features
 
 
 def main():
